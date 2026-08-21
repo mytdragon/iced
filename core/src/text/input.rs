@@ -110,21 +110,58 @@ impl<R: text::Renderer> Input<R> {
             &mut text::parser::PlainText,
         );
 
-        let bounds = limits.resolve(layout.width, layout.height, editor.min_bounds());
+        let bounds = match layout.height {
+            Length::Fill
+            | Length::FillPortion(_)
+            | Length::Fixed(_)
+            | Length::Bounded { .. }
+            | Length::Fluid(_) => {
+                let bounds = limits.bounds();
 
-        let _ = self.placeholder.update(Text {
-            content: layout.placeholder,
-            font,
-            line_height,
-            bounds,
-            size,
-            align_x: layout.alignment,
-            align_y: alignment::Vertical::Top,
-            shaping: text::Shaping::Advanced,
-            wrapping: text::Wrapping::None,
-            ellipsis: text::Ellipsis::None,
-            hint_factor,
-        });
+                let _ = self.placeholder.update(Text {
+                    content: layout.placeholder,
+                    font,
+                    line_height,
+                    bounds,
+                    size,
+                    align_x: layout.alignment,
+                    align_y: alignment::Vertical::Top,
+                    shaping: text::Shaping::Advanced,
+                    wrapping: text::Wrapping::None,
+                    ellipsis: text::Ellipsis::None,
+                    hint_factor,
+                });
+
+                bounds
+            }
+            Length::Shrink | Length::Fit => {
+                let _ = self.placeholder.update(Text {
+                    content: layout.placeholder,
+                    font,
+                    line_height,
+                    bounds: Size::INFINITE,
+                    size,
+                    align_x: layout.alignment,
+                    align_y: alignment::Vertical::Top,
+                    shaping: text::Shaping::Advanced,
+                    wrapping: text::Wrapping::None,
+                    ellipsis: text::Ellipsis::None,
+                    hint_factor,
+                });
+
+                let min_bounds = editor.min_bounds();
+                let placeholder_bounds = self.placeholder.min_bounds();
+
+                limits.resolve(
+                    layout.width,
+                    layout.height,
+                    Size::new(
+                        (min_bounds.width + 1.0).max(placeholder_bounds.width),
+                        min_bounds.height.max(placeholder_bounds.height),
+                    ),
+                )
+            }
+        };
 
         bounds.expand(layout.padding)
     }
