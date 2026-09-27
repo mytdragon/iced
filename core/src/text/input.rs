@@ -72,12 +72,7 @@ impl<R: text::Renderer> Input<R> {
         }
     }
 
-    pub fn layout(
-        &mut self,
-        renderer: &R,
-        limits: &layout::Limits,
-        layout: Layout<'_>,
-    ) -> layout::Node {
+    pub fn layout(&mut self, renderer: &R, limits: &layout::Limits, layout: Layout<'_>) -> Size {
         self.padding = layout.padding;
         self.multiline = layout.multiline;
 
@@ -168,7 +163,7 @@ impl<R: text::Renderer> Input<R> {
             }
         };
 
-        layout::Node::new(bounds.expand(layout.padding))
+        bounds.expand(layout.padding)
     }
 
     pub fn update<Message>(

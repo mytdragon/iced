@@ -41,6 +41,7 @@ use crate::core::mouse;
 use crate::core::overlay;
 use crate::core::renderer;
 use crate::core::widget;
+use crate::core::window;
 use crate::core::{Element, Event, Layout, Length, Point, Rectangle, Shell, Size, Vector, Widget};
 
 /// A widget that keeps its contents in view.
@@ -103,87 +104,127 @@ where
     }
 }
 
+struct State {
+    is_stuck: bool,
+}
+
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for Sticky<'_, Message, Theme, Renderer>
 where
     Renderer: core::Renderer,
 {
     fn tag(&self) -> widget::tree::Tag {
-        self.content.as_widget().tag()
+        widget::tree::Tag::of::<State>()
     }
 
     fn state(&self) -> widget::tree::State {
-        self.content.as_widget().state()
+        widget::tree::State::new(State { is_stuck: false })
     }
 
     fn diff(&mut self, tree: &mut widget::Tree) {
-        self.content.as_widget_mut().diff(tree);
+        tree.diff_children(&mut [&mut self.content]);
     }
 
     fn size(&self) -> Size<Length> {
         self.content.as_widget().size()
     }
 
-    fn layout(
-        &mut self,
-        tree: &mut widget::Tree,
-        renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        self.content.as_widget_mut().layout(tree, renderer, limits)
+    fn layout(&mut self, tree: &mut widget::Tree, renderer: &Renderer, limits: &layout::Limits) {
+        self.content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits);
+
+        tree.size = tree.children[0].size;
     }
 
     fn operate(
         &mut self,
         tree: &mut widget::Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         viewport: &Rectangle,
         renderer: &Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        if !layout.bounds().is_within(viewport) {
+        let state = tree.state.downcast_ref::<State>();
+
+        if state.is_stuck {
             return;
         }
 
-        self.content
-            .as_widget_mut()
-            .operate(tree, layout, viewport, renderer, operation);
+        self.content.as_widget_mut().operate(
+            &mut tree.children[0],
+            layout,
+            viewport,
+            renderer,
+            operation,
+        );
     }
 
     fn update(
         &mut self,
         tree: &mut widget::Tree,
         event: &Event,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        if !layout.bounds().is_within(viewport) {
+        let state = tree.state.downcast_mut::<State>();
+
+        if let Event::Window(window::Event::RedrawRequested(_)) = event {
+            let is_stuck = if let Some(parent) = layout.parent()
+                && parent.intersects(viewport)
+                && !layout.bounds().is_within(viewport)
+            {
+                true
+            } else {
+                false
+            };
+
+            if is_stuck != state.is_stuck {
+                state.is_stuck = is_stuck;
+                shell.invalidate_overlay();
+                return; // Avoid propagating a stale redraw
+            }
+        }
+
+        if state.is_stuck {
             return;
         }
 
-        self.content
-            .as_widget_mut()
-            .update(tree, event, layout, cursor, renderer, shell, viewport);
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            shell,
+            viewport,
+        );
     }
 
     fn mouse_interaction(
         &self,
         tree: &widget::Tree,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        if !layout.bounds().is_within(viewport) {
+        let state = tree.state.downcast_ref::<State>();
+
+        if state.is_stuck {
             return mouse::Interaction::None;
         }
 
-        self.content
-            .as_widget()
-            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
     }
 
     fn draw(
@@ -192,34 +233,47 @@ where
         renderer: &mut Renderer,
         theme: &Theme,
         style: &renderer::Style,
-        layout: Layout<'_>,
+        layout: Layout,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        if !layout.bounds().is_within(viewport) {
+        let state = tree.state.downcast_ref::<State>();
+
+        if state.is_stuck {
             return;
         }
 
-        self.content
-            .as_widget()
-            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        );
     }
 
     fn overlay<'b>(
         &'b mut self,
         tree: &'b mut widget::Tree,
-        layout: Layout<'b>,
+        layout: Layout,
         renderer: &Renderer,
         viewport: &Rectangle,
         translation: Vector,
+        window: Size,
     ) -> Vec<overlay::Element<'b, Message, Theme, Renderer>> {
         let bounds = layout.bounds();
         let parent = layout.parent();
+        let state = tree.state.downcast_ref::<State>();
 
         if let Some(parent) = parent
-            && !bounds.is_within(viewport)
-            && parent.intersects(viewport)
+            && state.is_stuck
         {
+            let viewport = *viewport + translation;
+            let bounds = bounds + translation;
+            let parent = parent + translation;
+
             let position = Point::new(
                 stuck_axis(
                     bounds.x,
@@ -237,20 +291,22 @@ where
                 ),
             );
 
-            let layout = layout.move_to(position + translation);
-            let bounds = Rectangle::new(position, bounds.size());
-            let viewport = bounds.intersection(viewport).unwrap_or(bounds) + translation;
-
             vec![overlay::Element::new(Box::new(Overlay {
                 content: &mut self.content,
-                tree,
-                layout,
+                tree: &mut tree.children[0],
+                layout: layout.move_to(position),
                 viewport,
+                window,
             }))]
         } else {
-            self.content
-                .as_widget_mut()
-                .overlay(tree, layout, renderer, viewport, translation)
+            self.content.as_widget_mut().overlay(
+                &mut tree.children[0],
+                layout,
+                renderer,
+                viewport,
+                translation,
+                window,
+            )
         }
     }
 }
@@ -310,8 +366,20 @@ where
 {
     content: &'b mut Element<'a, Message, Theme, Renderer>,
     tree: &'b mut widget::Tree,
-    layout: Layout<'b>,
+    layout: Layout,
     viewport: Rectangle,
+    window: Size,
+}
+
+impl<Message, Theme, Renderer> Overlay<'_, '_, Message, Theme, Renderer>
+where
+    Renderer: core::Renderer,
+{
+    fn bounds(&self) -> Rectangle {
+        self.viewport
+            .intersection(&self.layout.bounds())
+            .unwrap_or(self.layout.bounds())
+    }
 }
 
 impl<Message, Theme, Renderer> core::Overlay<Message, Theme, Renderer>
@@ -319,33 +387,23 @@ impl<Message, Theme, Renderer> core::Overlay<Message, Theme, Renderer>
 where
     Renderer: core::Renderer,
 {
-    fn layout(&mut self, _renderer: &Renderer, _bounds: Size) -> layout::Node {
-        layout::Node::new(self.viewport.size()).move_to(self.viewport.position())
-    }
+    fn operate(&mut self, renderer: &Renderer, operation: &mut dyn widget::Operation) {
+        let bounds = self.bounds();
 
-    fn operate(
-        &mut self,
-        _layout: Layout<'_>,
-        renderer: &Renderer,
-        operation: &mut dyn widget::Operation,
-    ) {
-        self.content.as_widget_mut().operate(
-            self.tree,
-            self.layout,
-            &self.viewport,
-            renderer,
-            operation,
-        );
+        self.content
+            .as_widget_mut()
+            .operate(self.tree, self.layout, &bounds, renderer, operation);
     }
 
     fn update(
         &mut self,
         event: &Event,
-        _layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         shell: &mut Shell<'_, Message>,
     ) {
+        let bounds = self.bounds();
+
         self.content.as_widget_mut().update(
             self.tree,
             event,
@@ -353,25 +411,22 @@ where
             cursor,
             renderer,
             shell,
-            &self.viewport,
+            &bounds,
         );
     }
 
-    fn mouse_interaction(
-        &self,
-        _layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &Renderer,
-    ) -> mouse::Interaction {
+    fn mouse_interaction(&self, cursor: mouse::Cursor, renderer: &Renderer) -> mouse::Interaction {
+        let bounds = self.bounds();
+
         let interaction = self.content.as_widget().mouse_interaction(
             self.tree,
             self.layout,
             cursor,
-            &self.viewport,
+            &bounds,
             renderer,
         );
 
-        if interaction == mouse::Interaction::None && cursor.is_over(self.viewport) {
+        if interaction == mouse::Interaction::None && cursor.is_over(bounds) {
             mouse::Interaction::Idle
         } else {
             interaction
@@ -383,23 +438,25 @@ where
         renderer: &mut Renderer,
         theme: &Theme,
         style: &renderer::Style,
-        _layout: Layout<'_>,
         cursor: mouse::Cursor,
     ) {
-        self.content.as_widget().draw(
-            self.tree,
-            renderer,
-            theme,
-            style,
-            self.layout,
-            cursor,
-            &self.viewport,
-        );
+        let bounds = self.bounds();
+
+        renderer.with_layer(bounds, |renderer| {
+            self.content.as_widget().draw(
+                self.tree,
+                renderer,
+                theme,
+                style,
+                self.layout,
+                cursor,
+                &bounds,
+            );
+        });
     }
 
     fn overlay<'c>(
         &'c mut self,
-        _layout: Layout<'c>,
         renderer: &Renderer,
     ) -> Vec<overlay::Element<'c, Message, Theme, Renderer>> {
         self.content.as_widget_mut().overlay(
@@ -408,6 +465,7 @@ where
             renderer,
             &self.viewport,
             Vector::ZERO,
+            self.window,
         )
     }
 }

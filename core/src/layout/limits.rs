@@ -79,11 +79,16 @@ impl Limits {
                 self.min.width = new_width;
                 self.max.width = new_width;
                 self.compression.width = false;
+                self.infinite.width = false;
             }
             Length::Bounded { bounds, sizing } => {
                 match bounds {
                     length::Bounds::Min(min) => {
-                        self.min.width = min.min(self.max.width).max(self.min.width);
+                        self.min.width = if self.infinite.width {
+                            min
+                        } else {
+                            min.min(self.max.width)
+                        };
                     }
                     length::Bounds::Max(max) => {
                         self.max.width = if self.infinite.width {
@@ -137,11 +142,16 @@ impl Limits {
                 self.min.height = new_height;
                 self.max.height = new_height;
                 self.compression.height = false;
+                self.infinite.height = false;
             }
             Length::Bounded { bounds, sizing } => {
                 match bounds {
                     length::Bounds::Min(min) => {
-                        self.min.height = min.min(self.max.height).max(self.min.height);
+                        self.min.height = if self.infinite.height {
+                            min
+                        } else {
+                            min.min(self.max.height)
+                        };
                     }
                     length::Bounds::Max(max) => {
                         self.max.height = if self.infinite.height {
