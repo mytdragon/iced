@@ -220,18 +220,20 @@ where
 
         shell.request_redraw_at(redraw_request);
 
-        if let event::Status::Captured = event_status {
-            shell.capture_event();
-        }
-
         if let Some(event) = publish {
             let _ = internal.events.push(event);
         }
 
         let mut invalidation = shell::Invalidation::None;
 
-        if !shell.is_event_captured() {
+        if let event::Status::Captured = event_status {
+            shell.capture_event();
+        } else {
             let mut local_shell = shell.local(&mut internal.events);
+
+            if shell.is_event_captured() {
+                local_shell.capture_event();
+            }
 
             self.view.update(
                 &mut tree.children[0],
